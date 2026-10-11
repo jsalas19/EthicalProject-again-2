@@ -1,23 +1,24 @@
 #!/bin/bash
 
-echo "[*] Updating system packages..."
-sudo apt update
-sudo apt upgrade -y
+set -e
+
+echo "[*] Updating package metadata..."
+sudo apt-get update
 
 # Install Deadsnakes PPA if Python 3.8 not found
 if ! python3.8 --version &>/dev/null; then
     echo "[*] Python 3.8 not found. Installing via Deadsnakes PPA..."
-    sudo apt install -y software-properties-common
+    sudo apt-get install -y --no-install-recommends software-properties-common
     sudo add-apt-repository ppa:deadsnakes/ppa -y
-    sudo apt update
-    sudo apt install -y python3.8 python3.8-venv python3.8-dev python3-pip
+    sudo apt-get update
+    sudo apt-get install -y --no-install-recommends python3.8 python3.8-venv python3.8-dev python3-pip
 else
     echo "[*] Python 3.8 already installed."
 fi
 
 # Install Mininet and Open vSwitch
 echo "[*] Installing Mininet and Open vSwitch..."
-sudo apt install -y mininet openvswitch-switch openvswitch-common
+sudo apt-get install -y --no-install-recommends mininet openvswitch-switch openvswitch-common
 
 # Set up Python virtual environment
 echo "[*] Creating Python 3.8 virtual environment..."
@@ -33,8 +34,9 @@ pip install --upgrade pip
 # Manually download and install Ryu 4.34
 echo "[*] Downloading and manually installing Ryu 4.34..."
 cd ~/Desktop
-wget https://github.com/faucetsdn/ryu/archive/refs/tags/v4.34.tar.gz
-tar -xvf v4.34.tar.gz
+wget -q https://github.com/faucetsdn/ryu/archive/refs/tags/v4.34.tar.gz
+rm -rf ryu-4.34
+tar -xzf v4.34.tar.gz
 cd ryu-4.34
 python3.8 setup.py install
 

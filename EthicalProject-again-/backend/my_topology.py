@@ -43,9 +43,11 @@ def process_mncmd(net):
     h2 = net.get('h2')
 
     while True:
-        if os.path.exists('/tmp/mncmd'):
-            with open('/tmp/mncmd') as f:
+        command_file = '/tmp/mncmd'
+        if os.path.exists(command_file):
+            with open(command_file, 'r', encoding='utf-8') as f:
                 lines = f.readlines()
+
             for line in lines:
                 cmd = line.strip()
                 if cmd:
@@ -57,10 +59,8 @@ def process_mncmd(net):
                             os.system(cmd)
                     except Exception as e:
                         print(f"❌ Error executing '{cmd}': {e}")
-            os.remove('/tmp/mncmd')
+            os.remove(command_file)
         time.sleep(1)
-
-
 
 
 def run():

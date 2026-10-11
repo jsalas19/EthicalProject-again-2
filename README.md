@@ -2,17 +2,19 @@
 
 This project simulates a Software-Defined Networking (SDN) environment using Mininet and Ryu to detect a Denial-of-Service (DoS) attack and automatically relocate the affected host to a different switch to mitigate the attack.
 
-The prototype is designed for research and lab use. It combines:
+The prototype is intentionally simple and designed for research and lab use. It combines:
 
 - a Mininet topology with multiple hosts and switches,
 - a Ryu OpenFlow controller that watches traffic patterns,
 - a lightweight mitigation routine that moves the victim host when abnormal traffic is detected.
 
+This is a proof-of-concept, not a production-ready security system.
+
 ---
 
 ## Overview
 
-The topology creates a small SDN network where a host is serving traffic and can be overwhelmed by excessive packet volume. The controller monitors destination IP traffic and triggers a mitigation when a packet threshold is exceeded.
+The topology creates a small SDN network where a host can be overwhelmed by excessive packet volume. The controller monitors destination IP traffic and triggers a mitigation when a packet threshold is exceeded.
 
 Once the attack is identified, the system attempts to:
 
@@ -41,6 +43,20 @@ This is a practical example of how an SDN controller can respond dynamically to 
 
 ---
 
+## What was improved in the current prototype
+
+The current implementation focuses on making the proof-of-concept more reliable without trying to scale it.
+
+- packet tracking now uses a rolling time window instead of a simple cumulative counter
+- attack detection keeps state per destination IP so it behaves more like a real rate check
+- cooldown logic prevents the same host from retriggering repeatedly during a single event
+- the topology and command handler were simplified so the migration flow is easier to reason about
+- package installation is less aggressive and avoids a broad system upgrade in the setup script
+
+These changes keep the project aligned with its purpose: a small demonstration of SDN-based attack detection and migration.
+
+---
+
 ## Prerequisites
 
 This project is intended for an Ubuntu-based environment with root or sudo access.
@@ -65,7 +81,7 @@ bash install.sh
 
 The installer performs the following:
 
-- updates system packages,
+- updates package metadata,
 - installs Python 3.8 and required tools,
 - installs Mininet and Open vSwitch,
 - creates a virtual environment named `venv38`,
@@ -95,12 +111,13 @@ The topology is defined in `backend/my_topology.py`, and the detection logic is 
 
 ## Behavior
 
-The DoS detector checks packet flow counts per destination IP and compares them against a threshold value. When the threshold is crossed, it raises an alert and triggers the migration sequence.
+The DoS detector checks packet flow counts per destination IP and compares them against a threshold value within a small time window. When the threshold is crossed, it raises an alert and triggers the migration sequence.
 
 Important notes:
 
 - the threshold is intentionally small for a lab environment,
 - the script is a prototype, not a hardened production-grade security system,
+- the migration is hard-coded for the simple demo topology,
 - network state changes depend on the host environment and switch configuration.
 
 ---
@@ -133,7 +150,7 @@ This project is best suited for educational and research environments where you 
 - basic attack detection with programmable networking,
 - dynamic network response to suspicious traffic patterns.
 
-If you are using this as a coursework or research project, consider documenting the exact topology, thresholds, and any assumptions behind the migration logic in your final write-up.
+It intentionally keeps the design simple and easy to debug, which makes it useful as a prototype for demonstrating the core idea before scaling or hardening the system.
 
 ---
 

@@ -1,12 +1,14 @@
 # Import required Ryu core components and OpenFlow v1.3
+from collections import defaultdict, deque
+import os
+import time
+
 from ryu.base import app_manager
 from ryu.controller import ofp_event
 from ryu.controller.handler import MAIN_DISPATCHER, CONFIG_DISPATCHER, set_ev_cls
-from ryu.ofproto import ofproto_v1_3
 from ryu.lib.packet import packet, ethernet, ipv4
-from collections import defaultdict
-import time
-import os
+from ryu.ofproto import ofproto_v1_3
+
 
 # Define a custom Ryu app for detecting DoS attacks and responding with host migration
 class DoSDetector(app_manager.RyuApp):
@@ -15,10 +17,11 @@ class DoSDetector(app_manager.RyuApp):
     def __init__(self, *args, **kwargs):
         super(DoSDetector, self).__init__(*args, **kwargs)
         self.mac_to_port = {}  # Keeps MAC-to-port mapping per switch
-        self.ip_packet_count = defaultdict(int)  # Counts packets per destination IP
-        self.last_check = time.time()  # Timestamp of last check
-        self.threshold = 5  # Threshold (packets/sec) to trigger DoS detection
-        self.migrated = False  # Prevents multiple migrations
+        self.ip_packet_times = defaultdict(deque)  # Tracks packet timestamps per destination IP
+        self.attack_state = {}  # Tracks per-IP attack state and cooldowns
+        self.window_size = 1.0  # Look back one second for packet bursts
+        self.threshold = 5  # Threshold packets/sec to trigger DoS detection
+        self.cooldown = 10.0  # Do not retrigger the same destination too quickly
 
     # Install default flow to send unknown packets to controller
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
@@ -35,6 +38,27 @@ class DoSDetector(app_manager.RyuApp):
         # Install flow entry
         mod = parser.OFPFlowMod(datapath=datapath, priority=0, match=match, instructions=inst)
         datapath.send_msg(mod)
+
+    def _evaluate_attack(self, dst_ip, now):
+        """Check if the destination is currently under attack and trigger migration if needed."""
+        packet_times = self.ip_packet_times[dst_ip]
+        while packet_times and now - packet_times[0] > self.window_size:
+            packet_times.popleft()
+
+        count = len(packet_times)
+        state = self.attack_state.setdefault(dst_ip, {"active": False, "last_trigger": 0.0})
+
+        if count >= self.threshold:
+            if not state["active"] and (now - state["last_trigger"]) >= self.cooldown:
+                self.logger.warning(f"⚠️ POSSIBLE DoS attack on {dst_ip} — {count} packets in {self.window_size:.1f}s")
+                state["active"] = True
+                state["last_trigger"] = now
+                self.migrate_host(dst_ip)
+            elif state["active"]:
+                self.logger.info(f"DoS detection remains active for {dst_ip} ({count} packets in window)")
+        elif state["active"] and count < self.threshold:
+            state["active"] = False
+            self.logger.info(f"Attack state cleared for {dst_ip}; traffic returned below threshold.")
 
     # Handle incoming packets (PacketIn events)
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
@@ -53,8 +77,9 @@ class DoSDetector(app_manager.RyuApp):
         ipv4_pkt = pkt.get_protocol(ipv4.ipv4)
         if ipv4_pkt:
             dst_ip = ipv4_pkt.dst
-            self.ip_packet_count[dst_ip] += 1
-            print(f"[DEBUG] Packet to {dst_ip}, count: {self.ip_packet_count[dst_ip]}")
+            now = time.time()
+            self.ip_packet_times[dst_ip].append(now)
+            self._evaluate_attack(dst_ip, now)
 
         src = eth.src
         dst = eth.dst
@@ -63,17 +88,6 @@ class DoSDetector(app_manager.RyuApp):
 
         # Learn the source MAC address on the current port
         self.mac_to_port[dpid][src] = in_port
-
-        # Check for potential DoS attacks every second
-        now = time.time()
-        if now - self.last_check >= 1.0:
-            for ip, count in self.ip_packet_count.items():
-                if count > self.threshold and not self.migrated:
-                    self.logger.warning(f"⚠️ POSSIBLE DoS attack on {ip} — {count} packets/sec")
-                    self.migrate_host()
-                    self.migrated = True
-            self.ip_packet_count.clear()
-            self.last_check = now
 
         # Forward the packet out to the correct port
         if dst in self.mac_to_port[dpid]:
@@ -89,36 +103,32 @@ class DoSDetector(app_manager.RyuApp):
         datapath.send_msg(out)
 
     # Function to migrate host h3 from s2 to s1
-    def migrate_host(self):
-        self.logger.info("🚀 Initiating automatic migration of h3...")
+    def migrate_host(self, target_ip):
+        host_name = 'h3'
+        self.logger.info(f"🚀 Initiating automatic migration of {host_name} due to traffic spike on {target_ip}...")
 
         cmds = [
-            # Disable old link
-            'py net.configLinkStatus(\\"h3\\", \\"s2\\", \\"down\\")',
-            # Add new link to switch s1
+            'py net.configLinkStatus("h3", "s2", "down")',
             'py net.addLink(h3, s1)',
-            # Bring up new interface with same IP and route
-            'py h3.cmd(\\"ifconfig h3-eth1 10.0.0.3/8 up\\")',
-            'py h3.cmd(\\"route add default dev h3-eth1\\")',
-            # Delete old interface
-            'py h3.cmd(\\"ip link delete h3-eth0\\")',
-            # Detach old link from switch s2
-            'py s2.detach(\\"s2-eth1\\")',
-            'py net.delLink(next(link for link in net.links if \\"s2-eth1\\" in str(link)))',
-            # Clear OpenFlow rules on both switches
-            'py os.system(\\"/usr/bin/ovs-ofctl del-flows s1 -O OpenFlow13\\")',
-            'py os.system(\\"/usr/bin/ovs-ofctl del-flows s2 -O OpenFlow13\\")'
+            'py h3.cmd("ifconfig h3-eth1 10.0.0.3/8 up")',
+            'py h3.cmd("route add default dev h3-eth1")',
+            'py h3.cmd("ip link delete h3-eth0")',
+            'py s2.detach("s2-eth1")',
+            'py net.delLink(next(link for link in net.links if "s2-eth1" in str(link)))',
+            'py os.system("/usr/bin/ovs-ofctl del-flows s1 -O OpenFlow13")',
+            'py os.system("/usr/bin/ovs-ofctl del-flows s2 -O OpenFlow13")'
         ]
 
-        # Write commands to /tmp/mncmd for Mininet's CLI loop to execute
-        for i, cmd in enumerate(cmds):
-            redirect = '>' if i == 0 else '>>'
-            os.system(f"mnexec -a $(pgrep -f 'bash.*mn') sh -c \"echo '{cmd}' {redirect} /tmp/mncmd\"")
+        cmd_file = '/tmp/mncmd'
+        if os.path.exists(cmd_file):
+            os.remove(cmd_file)
 
-        # Wait for commands to apply
+        with open(cmd_file, 'w', encoding='utf-8') as cmd_handle:
+            for cmd in cmds:
+                cmd_handle.write(f"{cmd}\n")
+
         time.sleep(2)
 
-        # Check if h3’s new interface is now linked to s1
         verify = os.popen("ovs-vsctl list-ports s1").read()
         if "s1-eth3" in verify:
             self.logger.info("✅ Host h3 migration verified: h3-eth1 is attached to s1.")
